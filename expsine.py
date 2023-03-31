@@ -1,3 +1,4 @@
+
 # Tools for computing audio impulse responses using exponential sine sweeps.
 # by Thatcher Ulrich
 #
@@ -54,7 +55,6 @@ import numpy as np
 
 def gen_ess(T, f1, f2, sample_rate):
     """Generate an Exponential Sine Sweep signal and its inverse.
-
     T is time in seconds
     f1 is starting frequency in Hz
     f2 is ending frequency in Hz
@@ -68,7 +68,7 @@ def gen_ess(T, f1, f2, sample_rate):
     L = T / math.log(w2 / w1)
     K = w1 * L
     x = np.zeros(samples)
-    A = 0.8  # amplitude
+    A = 0.8  # 0.8 amplitude
     for i in range(samples):
         t = i / float(sample_rate)
         fadeout = min(1.0, ((samples - i) / float(fadesamples)))
@@ -84,10 +84,11 @@ def gen_ess(T, f1, f2, sample_rate):
     return (x, f)
 
 
-def write_ess(ess_filename, inv_filename, T, f1, f2, sample_rate):
+def generate_ess(ess_filename, inv_filename, T, f1, f2, sample_rate):
     x, f = gen_ess(T, f1, f2, sample_rate)
     writewav(ess_filename, x, x, sample_rate)
     writewav(inv_filename, f, f, sample_rate)
+    return x, f
 
 
 def compute_ir(sweep_filename, inv_filename, ir_filename):
@@ -175,9 +176,9 @@ def writewav(filename, al, ar, sample_rate):
     f.setnframes(al.shape[0])
     f.writeframesraw(data)
     f.close()
-
-
+    
+    
 if __name__ == "__main__":
 
-    write_ess("ess_44k.wav", "inv_ess_44k.wav", 4.0, 10, 20000, 44100)
-    compute_ir("recorded.wav", "inv_ess_44k.wav", "ir_44k.wav")
+  chirp, inv = generate_ess("ess_16k.wav", "inv_ess_16k.wav", 4.0, 100, 8000, 16000)
+	#compute_ir("recorded.wav", "inv_ess_16k.wav", "ir_16k.wav")
