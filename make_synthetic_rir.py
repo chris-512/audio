@@ -29,7 +29,7 @@ from pyroomacoustics.directivities import (
 
 methods = ["ism", "hybrid", "anechoic"]
 
-perform_srp_phat = True
+perform_srp_phat = False
 display_rir = False
 visualize = False
 np.random.seed(2)
@@ -153,6 +153,33 @@ def reconstruct_ir_given_response(y, inv, n_fft=256, sr=44100, duration=2.0, num
   
   return ir, log_spec # (ir, spectrogram of ir)
 
+def init_room(args, rt60, room_dim_resized, fs):
+  # Initialize the room
+
+  # We invert Sabine's formula to obtain the parameters for the ISM simulator
+  e_absorption, max_order = pra.inverse_sabine(rt60, room_dim_resized)
+  # Use Sabine's formula to find the wall energy absorption and maximum order of the
+  # ISM required to achieve a desired reveberation time (RT60, i.e. the time it takes
+  # for the RIR to decay by 60db)
+
+  if args.method == "ism":
+      room = pra.ShoeBox(
+          room_dim_resized, fs=fs, materials=pra.Material(e_absorption), max_order=max_order,
+      )
+  elif args.method == "hybrid":
+      room = pra.ShoeBox(
+          room_dim_resized,
+          fs=fs,
+          materials=pra.Material(e_absorption),
+          max_order=3,
+          ray_tracing=True,
+          air_absorption=True,
+      )
+  elif args.method == "anechoic":
+      room = pra.AnechoicRoom(fs=fs)
+
+  return room
+
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
@@ -187,6 +214,7 @@ if __name__ == "__main__":
   
     # generate 0.5 sec of ess signal with sample rate of `fs`
     ess, inv = gen_ess(T=0.5, f1=100, f2=fs//2, sample_rate=fs)
+    speech, _ = librosa.load("speech/speech.wav", sr=fs)
 
     k = 0
     for rt60 in rt60s:
@@ -202,23 +230,17 @@ if __name__ == "__main__":
             print('rt60: ', rt60)
             print('wh_ratio: ', wh_ratio)
             print('room_dim: ', room_dim_resized)
-                      
-            # We invert Sabine's formula to obtain the parameters for the ISM simulator
-            e_absorption, max_order = pra.inverse_sabine(rt60, room_dim_resized)
-            # Use Sabine's formula to find the wall energy absorption and maximum order of the
-            # ISM required to achieve a desired reveberation time (RT60, i.e. the time it takes
-            # for the RIR to decay by 60db)
             
-            robot_locs = np.array([room_dim_resized[0]/2, room_dim_resized[1]/2, 0]) # at the center of the room
+            room_center = np.array([room_dim_resized[0]/2, room_dim_resized[1]/2, 0]) # at the center of the room
             # random robot location
             dx = np.random.uniform(-room_dim_resized[0]/4, room_dim_resized[0]/4)
             dy = np.random.uniform(-room_dim_resized[0]/4, room_dim_resized[0]/4)
-            robot_locs += [dx, dy, 0]
+            robot_locs = room_center + [dx, dy, 0]
             
             mic_locs = robot_locs + mic_offsets
             
             # random direction
-            (azi, colat) = np.random.choice(range(-180, 180)), np.random.choice(range(0, 30))
+            (azi, colat) = np.random.choice(range(-180, 180)), 0 # colat = 0
             
             # create random directivity object
             dir_obj = CardioidFamily(
@@ -226,13 +248,13 @@ if __name__ == "__main__":
                 pattern_enum=DirectivityPattern.HYPERCARDIOID,
             )
             
-            emitter_offset = np.array([0.5, 0, 0])
-            emitter_locs = robot_locs + emitter_offset # emitter at height 0.5m
+            emitter_offset = np.array([0.2, 0, 0.1])
+            emitter_locs = robot_locs + emitter_offset # emitter at forward 20cm, height 10cm
             
             def list_to_str(a):
               return ','.join([str(i) for i in a])
             
-            simul_config_name = f"data-{k}"
+            simul_config_name = f"{k}"
             simul_data_path = os.path.join(args.data_root, simul_config_name)
             if not os.path.exists(simul_data_path):
               os.makedirs(simul_data_path)
@@ -241,25 +263,10 @@ if __name__ == "__main__":
               config=f"random={random_idx},rt60={str(rt60)},room_dim={list_to_str(room_dim_resized)},robot={list_to_str(robot_locs)},emitter={list_to_str(emitter_locs)},emit_dir={list_to_str([azi, colat])}"
               f.write(config + "\n")
 
-            # Initialize the room
-            if args.method == "ism":
-                room = pra.ShoeBox(
-                    room_dim_resized, fs=fs, materials=pra.Material(e_absorption), max_order=max_order,
-                )
-            elif args.method == "hybrid":
-                room = pra.ShoeBox(
-                    room_dim_resized,
-                    fs=fs,
-                    materials=pra.Material(e_absorption),
-                    max_order=3,
-                    ray_tracing=True,
-                    air_absorption=True,
-                )
-            elif args.method == "anechoic":
-                room = pra.AnechoicRoom(fs=fs)
+            room = init_room(args, rt60, room_dim_resized, fs)
 
             room.add_source(
-                emitter_locs, signal=ess, delay=delay, directivity=dir_obj
+                emitter_locs, signal=ess, delay=0.0, directivity=dir_obj
             )
 
             mic_locs = np.c_[mic_locs[0], mic_locs[1], mic_locs[2], mic_locs[3]]
@@ -271,7 +278,7 @@ if __name__ == "__main__":
             room.simulate()
 
             # [4, ...]
-            room.mic_array.signals = room.mic_array.signals[:, int(fs):int((duration+1)*fs)]
+            room.mic_array.signals = room.mic_array.signals[:, :int(duration*fs)]
             log_spec = wav_to_log_spectrogram(room.mic_array.signals, n_fft=nfft)
             num_mics, num_bins, num_frames = log_spec.shape
             
@@ -331,6 +338,37 @@ if __name__ == "__main__":
             np.save(os.path.join(simul_data_path, "y.npy"), log_spec)
             print(f'Saving {os.path.join(simul_data_path, "rir.npy")}')
             np.save(os.path.join(simul_data_path, "rir.npy"), ir_tf_4ch)
+
+            a = (room_dim_resized[0] - robot_locs[0])/2
+            b = (room_dim_resized[1] - robot_locs[1])/2
+
+            for doa in range(0, 360, 5):
+              # new simulation for speech sample in the same condition 
+              room = init_room(args, rt60, room_dim_resized, fs)
+              speaker_offset = [a * math.cos((doa+azi)/180 * np.pi),
+                                b * math.sin((doa+azi)/180 * np.pi),
+                                0]
+              speaker_locs = robot_locs + speaker_offset # emitter at height 0.5m
+              print(speaker_locs)
+              print(room_dim_resized)
+
+              room.add_source(
+                  speaker_locs, signal=speech, delay=1.0
+              )
+
+              # finally place the array in the room
+              room.add_microphone_array(mic_locs)
+
+              # Run the simulation (this will also build the RIR automatically)
+              room.simulate()
+
+              print(f'Saving {os.path.join(simul_data_path, f"speech_{doa}.wav")}')
+              room.mic_array.to_wav(
+                os.path.join(simul_data_path, f"speech_{doa}.wav"),
+                norm=True,
+                bitdepth=np.int16,
+              )
+
 
             mngr = plt.get_current_fig_manager()
             # to put it into the upper left corner for example:
